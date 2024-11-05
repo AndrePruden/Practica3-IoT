@@ -106,6 +106,10 @@ Servo myservo;
 int servoPin = 18;
 int servoPosition = 0;  // Variable to track the servo position in degrees
 
+// LED pins
+int redLedPin = 12;
+int blueLedPin = 14;
+
 // Function to report the current servo position
 void reportServoPosition() {
   outputDoc["state"]["reported"]["servoPosition"] = servoPosition;
@@ -116,6 +120,14 @@ void reportServoPosition() {
 // Function to set the servo position based on servoPosition
 void setServoPosition() {
   myservo.write(servoPosition);
+    // Control the LEDs based on servo position
+  if (servoPosition == 90 || servoPosition == 180) {
+    digitalWrite(redLedPin, HIGH);
+    digitalWrite(blueLedPin, LOW);
+  } else if (servoPosition == 0) {
+    digitalWrite(redLedPin, LOW);
+    digitalWrite(blueLedPin, HIGH);
+  }
   reportServoPosition();
 }
 
@@ -156,6 +168,10 @@ void setup() {
   ESP32PWM::allocateTimer(3);
   myservo.setPeriodHertz(50);
   myservo.attach(servoPin, 500, 2400);  // Attach servo to pin 18
+
+    // LED pin setup
+  pinMode(redLedPin, OUTPUT);
+  pinMode(blueLedPin, OUTPUT);
 }
 
 void setupWiFi() {
@@ -187,6 +203,15 @@ void reconnect() {
 }
 
 void loop() {
+  //Serial.println(myservo.read());
+  if (myservo.read() > 10 && myservo.read() != 8880){
+      digitalWrite(redLedPin, HIGH);
+      digitalWrite(blueLedPin, LOW);
+  }
+  else{
+      digitalWrite(redLedPin, LOW);
+      digitalWrite(blueLedPin, HIGH);
+  }
   if (!client.connected()) {
     reconnect();
   }
