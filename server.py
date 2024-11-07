@@ -4,7 +4,7 @@ import cv2
 app = Flask(__name__)
 
 # Inicialización de la captura de video desde la webcam
-camera = cv2.VideoCapture(0)  # Asegúrate de que la webcam esté en el índice correcto
+camera = cv2.VideoCapture(1)  # Asegúrate de que la webcam esté en el índice correcto
 
 def generate_frames():
     while True:

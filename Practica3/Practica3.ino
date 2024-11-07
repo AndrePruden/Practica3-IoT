@@ -110,6 +110,8 @@ int servoPosition = 0;  // Variable to track the servo position in degrees
 int redLedPin = 12;
 int blueLedPin = 14;
 
+int sensorLaserPin = 34;
+
 // Function to report the current servo position
 void reportServoPosition() {
   outputDoc["state"]["reported"]["servoPosition"] = servoPosition;
@@ -192,6 +194,7 @@ void reconnect() {
     if (client.connect(CLIENT_ID)) {
       Serial.println("connected");
       client.subscribe(UPDATE_DELTA_TOPIC);
+      servoPosition = inputDoc["state"]["servoPosition"].as<int>();
       reportServoPosition();
     } else {
       Serial.print("failed, rc=");
@@ -202,7 +205,17 @@ void reconnect() {
   }
 }
 
+unsigned long lastLaserTime = 0;  // Variable para almacenar el último tiempo cuando se detectó el corte
+unsigned long laserCutDuration = 500;  // Duración para esperar (1000 ms = 1 segundo)
+bool laserCutFlag = false;
+
 void loop() {
+
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
   //Serial.println(myservo.read());
   if (myservo.read() > 10 && myservo.read() != 8880){
       digitalWrite(redLedPin, HIGH);
@@ -212,8 +225,44 @@ void loop() {
       digitalWrite(redLedPin, LOW);
       digitalWrite(blueLedPin, HIGH);
   }
-  if (!client.connected()) {
-    reconnect();
+
+  int valorAnalogico = analogRead(sensorLaserPin);
+  float voltaje = valorAnalogico * (3.3 / 4095.0);
+
+  if (voltaje > 3) {
+    // Si no se ha activado el temporizador previamente o el láser ha sido cortado por menos de 1 segundo
+    if (!laserCutFlag) {
+      // Si no ha pasado el tiempo suficiente desde el último corte, empezar a contar
+      if (millis() - lastLaserTime >= laserCutDuration) {
+        // Si ha pasado el tiempo necesario, marcar que el láser ha estado cortado durante 1 segundo
+        laserCutFlag = true;
+
+        // Mover el servo a la posición 90 grados
+        myservo.write(90);
+        servoPosition = 90;
+
+        // Crear el JSON para enviar al tópico UPDATE_TOPIC
+        String jsonPayload = "{\"state\": {\"desired\": {\"servoPosition\": ";
+        jsonPayload += String(servoPosition);  // Agregar la posición del servo
+        jsonPayload += "}, \"reported\": {\"servoPosition\": ";
+        jsonPayload += String(servoPosition);  // También reportar la misma posición
+        jsonPayload += "}}}";
+
+        // Publicar el JSON literal en el tópico UPDATE_TOPIC
+        client.publish(UPDATE_TOPIC, jsonPayload.c_str());
+
+        Serial.println("Laser cortado durante 1 segundo. Mensaje publicado.");
+      }
+    }
+  } else {
+    // Si el láser se apaga antes de completar el tiempo, reiniciar el temporizador
+    if (laserCutFlag) {
+      // Si el láser se apaga, reiniciar el temporizador
+      laserCutFlag = false;  // Reiniciar la bandera del corte
+      lastLaserTime = 0;  // Reiniciar el tiempo
+      Serial.println("Laser se apagó antes de 1 segundo. Reiniciando temporizador.");
+    }
+    // Resetear la variable para asegurar que no se registre un corte falso
+    lastLaserTime = millis();  // Reiniciar el tiempo si el láser se apaga
   }
-  client.loop();
 }
