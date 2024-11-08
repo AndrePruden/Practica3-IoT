@@ -1,8 +1,8 @@
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
-#include <ESP32Servo.h>
+#include "WiFiHandler.h"
+#include "MQTTHandler.h"
+#include "ServoController.h"
+#include "LEDHandler.h"
+#include "LaserSensor.h"
 
 // WiFi credentials
 const char* WIFI_SSID = "PRULAND";
@@ -13,7 +13,7 @@ const char* MQTT_BROKER = "a5ji8fpy1x6e7-ats.iot.us-east-1.amazonaws.com";
 const int MQTT_PORT = 8883;
 const char* CLIENT_ID = "ESP-32";
 
-// Certificate and key
+  // Certificate and key
 const char AMAZON_ROOT_CA1[] PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----
 MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
@@ -94,175 +94,53 @@ s5AMKCOzWQyGgopaccmYAlahALv+wgm5opSW+BA/F66u3H+OBoA=
 const char* UPDATE_TOPIC = "$aws/things/MyThing/shadow/update";
 const char* UPDATE_DELTA_TOPIC = "$aws/things/MyThing/shadow/update/delta";
 
-WiFiClientSecure wiFiClient;
-PubSubClient client(wiFiClient);
+// Pin definitions
+const int SERVO_PIN = 18;
+const int RED_LED_PIN = 12;
+const int BLUE_LED_PIN = 14;
+const int LASER_SENSOR_PIN = 34;
 
-StaticJsonDocument<JSON_OBJECT_SIZE(64)> inputDoc;
-StaticJsonDocument<JSON_OBJECT_SIZE(4)> outputDoc;
-char outputBuffer[128];
+// Global objects
+WiFiHandler wifiHandler(WIFI_SSID, WIFI_PASS);
+WiFiClientSecure wifiClient;
+MQTTHandler mqttHandler(MQTT_BROKER, MQTT_PORT, CLIENT_ID, UPDATE_TOPIC, UPDATE_DELTA_TOPIC, wifiClient);
+LEDHandler ledHandler(RED_LED_PIN, BLUE_LED_PIN);
+ServoController servoController(SERVO_PIN, mqttHandler, ledHandler);
+LaserSensor laserSensor(LASER_SENSOR_PIN, servoController, mqttHandler);
 
-// Servo setup
-Servo myservo;
-int servoPin = 18;
-int servoPosition = 0;  // Variable to track the servo position in degrees
-
-// LED pins
-int redLedPin = 12;
-int blueLedPin = 14;
-
-int sensorLaserPin = 34;
-
-// Function to report the current servo position
-void reportServoPosition() {
-  outputDoc["state"]["reported"]["servoPosition"] = servoPosition;
-  serializeJson(outputDoc, outputBuffer);
-  client.publish(UPDATE_TOPIC, outputBuffer);
-}
-
-// Function to set the servo position based on servoPosition
-void setServoPosition() {
-  myservo.write(servoPosition);
-    // Control the LEDs based on servo position
-  if (servoPosition == 90 || servoPosition == 180) {
-    digitalWrite(redLedPin, HIGH);
-    digitalWrite(blueLedPin, LOW);
-  } else if (servoPosition == 0) {
-    digitalWrite(redLedPin, LOW);
-    digitalWrite(blueLedPin, HIGH);
-  }
-  reportServoPosition();
-}
-
-// Callback function to handle messages received from the subscribed topic
 void callback(char* topic, byte* payload, unsigned int length) {
-  String message;
-  for (int i = 0; i < length; i++) message += String((char)payload[i]);
-  Serial.println("Message from topic " + String(topic) + ": " + message);
-  
-  DeserializationError err = deserializeJson(inputDoc, payload);
-  if (!err) {
-    if (String(topic) == UPDATE_DELTA_TOPIC) {
-      // Extract the new servo position
-      servoPosition = inputDoc["state"]["servoPosition"].as<int>();
-      setServoPosition();
+    String message;
+    for (int i = 0; i < length; i++) message += String((char)payload[i]);
+    Serial.println("Message from topic " + String(topic) + ": " + message);
+    
+    StaticJsonDocument<JSON_OBJECT_SIZE(64)> inputDoc;
+    DeserializationError err = deserializeJson(inputDoc, payload);
+    if (!err) {
+        if (String(topic) == UPDATE_DELTA_TOPIC) {
+            int newPosition = inputDoc["state"]["servoPosition"].as<int>();
+            servoController.setPosition(newPosition);
+        }
     }
-  }
 }
 
 void setup() {
-  Serial.begin(115200);
-  
-  // WiFi connection
-  setupWiFi();
-  
-  // Secure connection for MQTT
-  wiFiClient.setCACert(AMAZON_ROOT_CA1);
-  wiFiClient.setCertificate(CERTIFICATE);
-  wiFiClient.setPrivateKey(PRIVATE_KEY);
-  
-  client.setServer(MQTT_BROKER, MQTT_PORT);
-  client.setCallback(callback);
-  
-  // Servo setup
-  ESP32PWM::allocateTimer(0);
-  ESP32PWM::allocateTimer(1);
-  ESP32PWM::allocateTimer(2);
-  ESP32PWM::allocateTimer(3);
-  myservo.setPeriodHertz(50);
-  myservo.attach(servoPin, 500, 2400);  // Attach servo to pin 18
-
-    // LED pin setup
-  pinMode(redLedPin, OUTPUT);
-  pinMode(blueLedPin, OUTPUT);
+    Serial.begin(115200);
+    
+    // Setup connections
+    wifiHandler.connect();
+    mqttHandler.setup(AMAZON_ROOT_CA1, CERTIFICATE, PRIVATE_KEY);
+    mqttHandler.setCallback(callback);
+    
+    // Setup hardware
+    servoController.setup();
 }
-
-void setupWiFi() {
-  Serial.print("Connecting to ");
-  Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("Connected to WiFi.");
-}
-
-void reconnect() {
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    if (client.connect(CLIENT_ID)) {
-      Serial.println("connected");
-      client.subscribe(UPDATE_DELTA_TOPIC);
-      servoPosition = inputDoc["state"]["servoPosition"].as<int>();
-      reportServoPosition();
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" trying again in 5 seconds");
-      delay(5000);
-    }
-  }
-}
-
-unsigned long lastLaserTime = 0;  // Variable para almacenar el último tiempo cuando se detectó el corte
-unsigned long laserCutDuration = 500;  // Duración para esperar (1000 ms = 1 segundo)
-bool laserCutFlag = false;
 
 void loop() {
-
-  if (!client.connected()) {
-    reconnect();
-  }
-  client.loop();
-
-  //Serial.println(myservo.read());
-  if (myservo.read() > 10 && myservo.read() != 8880){
-      digitalWrite(redLedPin, HIGH);
-      digitalWrite(blueLedPin, LOW);
-  }
-  else{
-      digitalWrite(redLedPin, LOW);
-      digitalWrite(blueLedPin, HIGH);
-  }
-
-  int valorAnalogico = analogRead(sensorLaserPin);
-  float voltaje = valorAnalogico * (3.3 / 4095.0);
-
-  if (voltaje > 3) {
-    // Si no se ha activado el temporizador previamente o el láser ha sido cortado por menos de 1 segundo
-    if (!laserCutFlag) {
-      // Si no ha pasado el tiempo suficiente desde el último corte, empezar a contar
-      if (millis() - lastLaserTime >= laserCutDuration) {
-        // Si ha pasado el tiempo necesario, marcar que el láser ha estado cortado durante 1 segundo
-        laserCutFlag = true;
-
-        // Mover el servo a la posición 90 grados
-        myservo.write(90);
-        servoPosition = 90;
-
-        // Crear el JSON para enviar al tópico UPDATE_TOPIC
-        String jsonPayload = "{\"state\": {\"desired\": {\"servoPosition\": ";
-        jsonPayload += String(servoPosition);  // Agregar la posición del servo
-        jsonPayload += "}, \"reported\": {\"servoPosition\": ";
-        jsonPayload += String(servoPosition);  // También reportar la misma posición
-        jsonPayload += "}}}";
-
-        // Publicar el JSON literal en el tópico UPDATE_TOPIC
-        client.publish(UPDATE_TOPIC, jsonPayload.c_str());
-
-        Serial.println("Laser cortado durante 1 segundo. Mensaje publicado.");
-      }
+    if (!mqttHandler.isConnected()) {
+        mqttHandler.connect();
     }
-  } else {
-    // Si el láser se apaga antes de completar el tiempo, reiniciar el temporizador
-    if (laserCutFlag) {
-      // Si el láser se apaga, reiniciar el temporizador
-      laserCutFlag = false;  // Reiniciar la bandera del corte
-      lastLaserTime = 0;  // Reiniciar el tiempo
-      Serial.println("Laser se apagó antes de 1 segundo. Reiniciando temporizador.");
-    }
-    // Resetear la variable para asegurar que no se registre un corte falso
-    lastLaserTime = millis();  // Reiniciar el tiempo si el láser se apaga
-  }
+    mqttHandler.loop();
+    
+    servoController.updateLEDs();
+    laserSensor.checkLaser();
 }
